@@ -67,6 +67,7 @@
 #include "hw/dma/pl080.h"
 #include "hw/rtc/pl031.h"
 #include "hw/ssi/pl022.h"
+#include "hw/ssi/ssi.h"
 #include "hw/i2c/arm_sbcon_i2c.h"
 #include "hw/net/lan9118.h"
 #include "net/net.h"
@@ -287,6 +288,56 @@ static const RAMInfo an547_raminfo[] = { {
         .name = NULL,
     },
 };
+
+#define NOR_FLASH_SPI_NO    0
+
+void mps2_write_fpgaio_misc(MPS2FPGAIO *fpgaio, uint32_t value);
+void mps2_add_nor_flash(MPS2TZMachineState *mms);
+
+void mps2_write_fpgaio_misc(MPS2FPGAIO *fpgaio, uint32_t value)
+{
+    MPS2TZMachineState *mms = NULL;
+
+    /* Misc control
+        [31:10] : Reserved
+        [9]     : SHIELD1_SPI_nCS, for spi[4]
+        [8]     : SHIELD0_SPI_nCS, for spi[3]
+        [7]     : ADC_SPI_nCS, for spi[2]
+        [6]     : CLCD_BL_CTRL
+        [5]     : CLCD_RD
+        [4]     : CLCD_RS
+        [3]     : CLCD_RESET
+        [2]     : Reserved
+        [1]     : SPI_nSS, for mms->spi[0]
+        [0]     : CLCD_CS, for mms->spi[1]
+        Currently only SPI_nSS is implemented.
+    */
+    //SysBusDevice <- DeviceState <- Object(main_system_bus) <- machine
+    mms = (MPS2TZMachineState *)(fpgaio->parent_obj.parent_obj.parent_obj.parent);
+    ssi_chipselect(mms->spi[NOR_FLASH_SPI_NO].ssi, (value & 0x2));
+}
+
+void mps2_add_nor_flash(MPS2TZMachineState *mms)
+{
+    BusState *spi_bus = NULL;
+    DeviceState *flash = NULL;
+    DriveInfo *dinfo = NULL;
+
+    spi_bus = (BusState *)mms->spi[NOR_FLASH_SPI_NO].ssi;
+
+    // -device hmi02g-pc,bus=ssi
+    flash = qdev_new("hmi02g-pc"); //256MB nor flash
+
+    //Options: -drive file=filename,bus=0,unit=0
+    dinfo = drive_get(IF_NONE, 0, 0);
+    if (!dinfo) {
+        error_report("vexpress: error registering flash 0");
+    } else {
+        qdev_prop_set_drive_err(flash, "drive", blk_by_legacy_dinfo(dinfo), &error_fatal);
+    }
+
+    qdev_realize_and_unref(flash, spi_bus, &error_fatal);
+}
 
 static const RAMInfo *find_raminfo_for_mpc(MPS2TZMachineState *mms, int mpc)
 {
@@ -1201,6 +1252,9 @@ static void mps2tz_common_init(MachineState *machine)
 
         // add PL111 Color LCD Controller
         sysbus_create_simple("pl111", 0x40305000, get_sse_irq_in(mms, 125));
+
+        // add 256MB nor-flash device, connect to spi0 by default
+        mps2_add_nor_flash(mms);
     }
 
     armv7m_load_kernel(ARM_CPU(first_cpu), machine->kernel_filename,

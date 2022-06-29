@@ -15,6 +15,7 @@
 #include "hw/ssi/ssi.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "qom/object.h"
 
 //#define DEBUG_PL022 1
 
@@ -68,6 +69,68 @@ static void pl022_update(PL022State *s)
         s->is |= PL022_INT_TX;
 
     qemu_set_irq(s->irq, (s->is & s->im) != 0);
+}
+
+static void pl022_page_cache_enable(PL022State *s)
+{
+    MemoryRegion *root = NULL;
+    MemoryRegionSection *mem_section = &s->pcache_mem;
+
+    root = sysbus_address_space(SYS_BUS_DEVICE(s));
+
+    if (mem_section->mr) {
+        memory_region_unref(mem_section->mr);
+        mem_section->mr = NULL;
+    }
+
+    *mem_section = memory_region_find(root, s->pcache_base, s->pcache_size);
+    if (!mem_section->mr) {
+        return;
+    }
+
+    if (int128_get64(mem_section->size) < s->pcache_size ||
+            !memory_region_is_ram(mem_section->mr)) {
+        memory_region_unref(mem_section->mr);
+        mem_section->mr = NULL;
+    }
+}
+
+extern int m25p80_pcache_rd(SSIPeripheral *ss, uint32_t addr, uint8_t *buf, uint32_t len);
+extern int m25p80_pcache_wr(SSIPeripheral *ss, uint32_t addr, uint8_t *buf, uint32_t len);
+
+static void pl022_page_cache_transfer(PL022State *s)
+{
+    uint8_t *src = NULL;
+    BusState *b = BUS(s->ssi);
+    BusChild *kid;
+    SSIPeripheral *dev;
+    SSIPeripheralClass *ssc;
+
+    if (!s->pcache_mem.mr) {
+        DPRINTF("Invalid memory region!\n");
+        return;
+    }
+
+    src = memory_region_get_ram_ptr(s->pcache_mem.mr) + \
+            s->pcache_mem.offset_within_region;
+
+    QTAILQ_FOREACH(kid, &b->children, sibling)
+    {
+        dev = SSI_PERIPHERAL(kid->child);
+        ssc = SSI_PERIPHERAL_GET_CLASS(dev);
+
+        if ((!dev->cs && ssc->cs_polarity == SSI_CS_LOW) ||
+            (dev->cs && ssc->cs_polarity == SSI_CS_HIGH) ||
+            (ssc->cs_polarity == SSI_CS_NONE))
+        {
+            if(s->pcache_state != 1) {
+                m25p80_pcache_wr(dev, s->pcache_addr, src, s->pcache_size);
+            } else {
+                m25p80_pcache_rd(dev, s->pcache_addr, src, s->pcache_size);
+            }
+        }
+    }
+    s->pcache_state = 0;
 }
 
 static void pl022_xfer(PL022State *s)
@@ -152,6 +215,12 @@ static uint64_t pl022_read(void *opaque, hwaddr offset,
     case 0x24: /* DMACR */
         /* Not implemented.  */
         return 0;
+    case 0x28: /* page cache size */
+        return s->pcache_size;
+    case 0x2C: /* page cache base addr */
+        return s->pcache_base;
+    case 0x38: /* page cache state */
+        return s->pcache_state;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pl022_read: Bad offset %x\n", (int)offset);
@@ -208,6 +277,28 @@ static void pl022_write(void *opaque, hwaddr offset,
             qemu_log_mask(LOG_UNIMP, "pl022: DMA not implemented\n");
         }
         break;
+    case 0x28:
+        s->pcache_size = value;
+        if(value && s->pcache_base) { //if all set, enable cache
+            pl022_page_cache_enable(s);
+        }
+        break;
+    case 0x2C:
+        s->pcache_base = value;
+        if(value && s->pcache_size) { //if all set, enable cache
+            pl022_page_cache_enable(s);
+        }
+        break;
+    case 0x30:
+        s->pcache_addr = value;
+        s->pcache_state = 1; //set read busy
+        pl022_page_cache_transfer(s); //start read
+        break;
+    case 0x34:
+        s->pcache_addr = value;
+        s->pcache_state = 2; //set write busy
+        pl022_page_cache_transfer(s); //start write
+        break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pl022_write: Bad offset %x\n", (int)offset);
@@ -257,6 +348,10 @@ static const VMStateDescription vmstate_pl022 = {
         VMSTATE_UINT32(cpsr, PL022State),
         VMSTATE_UINT32(is, PL022State),
         VMSTATE_UINT32(im, PL022State),
+        VMSTATE_UINT32(pcache_size, PL022State),
+        VMSTATE_UINT32(pcache_base, PL022State),
+        VMSTATE_UINT32(pcache_addr, PL022State),
+        VMSTATE_UINT32(pcache_state, PL022State),
         VMSTATE_INT32(tx_fifo_head, PL022State),
         VMSTATE_INT32(rx_fifo_head, PL022State),
         VMSTATE_INT32(tx_fifo_len, PL022State),

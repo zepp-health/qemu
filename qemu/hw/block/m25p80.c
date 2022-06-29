@@ -128,6 +128,24 @@ typedef struct FlashPartInfo {
     .flags = (_flags),\
     .die_cnt = _die_cnt
 
+/* For nor flash with page cache, The page size is 4K. */
+#define INFO_PCFLASH(_part_name, _jedec_id, _ext_id, _sector_size, _n_sectors,\
+                    _flags, _die_cnt)\
+    .part_name = _part_name,\
+    .id = {\
+        ((_jedec_id) >> 16) & 0xff,\
+        ((_jedec_id) >> 8) & 0xff,\
+        (_jedec_id) & 0xff,\
+        ((_ext_id) >> 8) & 0xff,\
+        (_ext_id) & 0xff,\
+          },\
+    .id_len = (!(_jedec_id) ? 0 : (3 + ((_ext_id) ? 2 : 0))),\
+    .sector_size = (_sector_size),\
+    .n_sectors = (_n_sectors),\
+    .page_size = 4096,\
+    .flags = (_flags),\
+    .die_cnt = _die_cnt
+
 #define JEDEC_NUMONYX 0x20
 #define JEDEC_WINBOND 0xEF
 #define JEDEC_SPANSION 0x01
@@ -261,6 +279,7 @@ static const FlashPartInfo known_devices[] = {
     { INFO_STACKED("mt25qu01g", 0x20bb21, 0x1040, 64 << 10, 2048, ER_4K, 2) },
     { INFO_STACKED("mt25ql02g", 0x20ba22, 0x1040, 64 << 10, 4096, ER_4K | ER_32K, 2) },
     { INFO_STACKED("mt25qu02g", 0x20bb22, 0x1040, 64 << 10, 4096, ER_4K | ER_32K, 2) },
+    { INFO_PCFLASH("hmi02g-pc", 0x20ba23, 0x1040, 64 << 10, 4096, ER_4K | ER_32K, 2) },
 
     /* Spansion -- single (large) sector size only, at least
      * for the chips listed here (without boot sectors).
@@ -1479,6 +1498,44 @@ static uint32_t m25p80_transfer8(SSIPeripheral *ss, uint32_t tx)
     }
 
     return r;
+}
+
+extern int m25p80_pcache_rd(SSIPeripheral *ss, uint32_t addr, uint8_t *buf, uint32_t len);
+extern int m25p80_pcache_wr(SSIPeripheral *ss, uint32_t addr, uint8_t *buf, uint32_t len);
+
+int m25p80_pcache_rd(SSIPeripheral *ss, uint32_t addr, uint8_t *buf, uint32_t len)
+{
+    Flash *s = M25P80(ss);
+
+    if(s->state != STATE_IDLE) {
+        return -1;
+    }
+
+    s->cur_addr = addr & (s->size - 1);
+    memcpy(buf, &s->storage[s->cur_addr], len);
+    return 0;
+}
+
+int m25p80_pcache_wr(SSIPeripheral *ss, uint32_t addr, uint8_t *buf, uint32_t len)
+{
+    Flash *s = M25P80(ss);
+    uint32_t page_start, page_end;
+
+    if(s->state != STATE_IDLE) {
+        return -1;
+    }
+
+    s->cur_addr = addr & (s->size - 1);
+    memcpy(&s->storage[s->cur_addr], buf, len);
+
+    page_start = s->cur_addr / s->pi->page_size;
+    page_end = page_start + (len / s->pi->page_size);
+    for(; page_start < page_end; page_start++)
+    {
+        flash_sync_dirty(s, page_start);
+        s->dirty_page = page_start;
+    }
+    return 0;
 }
 
 static void m25p80_realize(SSIPeripheral *ss, Error **errp)

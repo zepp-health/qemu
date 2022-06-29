@@ -39,6 +39,8 @@ REG32(PSCNTR, 0x20)
 REG32(SWITCH, 0x28)
 REG32(MISC, 0x4c)
 
+extern void mps2_write_fpgaio_misc(MPS2FPGAIO *fpgaio, uint32_t value);
+
 static uint32_t counter_from_tickoff(int64_t now, int64_t tick_offset, int frq)
 {
     return muldiv64(now - tick_offset, frq, NANOSECONDS_PER_SECOND);
@@ -222,6 +224,7 @@ static void mps2_fpgaio_write(void *opaque, hwaddr offset, uint64_t value,
         qemu_log_mask(LOG_UNIMP,
                       "MPS2 FPGAIO: MISC control bits unimplemented\n");
         s->misc = value;
+        mps2_write_fpgaio_misc(s, (uint32_t)value);
         break;
     case A_CLK1HZ:
         now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);

@@ -127,6 +127,22 @@ uint32_t ssi_transfer(SSIBus *bus, uint32_t val)
     return r;
 }
 
+void ssi_chipselect(SSIBus *bus, int level)
+{
+    BusState *b = BUS(bus);
+    BusChild *kid;
+    SSIPeripheralClass *ssc;
+    bool cs = !!level;
+
+    QTAILQ_FOREACH(kid, &b->children, sibling) {
+        SSIPeripheral *peripheral = SSI_PERIPHERAL(kid->child);
+        ssc = SSI_PERIPHERAL_GET_CLASS(peripheral);
+        if (ssc->set_cs) {
+            ssc->set_cs(peripheral, cs);
+        }
+    }
+}
+
 const VMStateDescription vmstate_ssi_peripheral = {
     .name = "SSISlave",
     .version_id = 1,

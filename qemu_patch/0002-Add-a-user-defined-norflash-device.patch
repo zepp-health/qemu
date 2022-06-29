@@ -1,0 +1,377 @@
+diff --git a/qemu/hw/arm/mps2-tz.c b/qemu/hw/arm/mps2-tz.c
+index 5561d66..23a7733 100644
+--- a/qemu/hw/arm/mps2-tz.c
++++ b/qemu/hw/arm/mps2-tz.c
+@@ -67,6 +67,7 @@
+ #include "hw/dma/pl080.h"
+ #include "hw/rtc/pl031.h"
+ #include "hw/ssi/pl022.h"
++#include "hw/ssi/ssi.h"
+ #include "hw/i2c/arm_sbcon_i2c.h"
+ #include "hw/net/lan9118.h"
+ #include "net/net.h"
+@@ -288,6 +289,56 @@ static const RAMInfo an547_raminfo[] = { {
+     },
+ };
+ 
++#define NOR_FLASH_SPI_NO    0
++
++void mps2_write_fpgaio_misc(MPS2FPGAIO *fpgaio, uint32_t value);
++void mps2_add_nor_flash(MPS2TZMachineState *mms);
++
++void mps2_write_fpgaio_misc(MPS2FPGAIO *fpgaio, uint32_t value)
++{
++    MPS2TZMachineState *mms = NULL;
++
++    /* Misc control
++        [31:10] : Reserved
++        [9]     : SHIELD1_SPI_nCS, for spi[4]
++        [8]     : SHIELD0_SPI_nCS, for spi[3]
++        [7]     : ADC_SPI_nCS, for spi[2]
++        [6]     : CLCD_BL_CTRL
++        [5]     : CLCD_RD
++        [4]     : CLCD_RS
++        [3]     : CLCD_RESET
++        [2]     : Reserved
++        [1]     : SPI_nSS, for mms->spi[0]
++        [0]     : CLCD_CS, for mms->spi[1]
++        Currently only SPI_nSS is implemented.
++    */
++    //SysBusDevice <- DeviceState <- Object(main_system_bus) <- machine
++    mms = (MPS2TZMachineState *)(fpgaio->parent_obj.parent_obj.parent_obj.parent);
++    ssi_chipselect(mms->spi[NOR_FLASH_SPI_NO].ssi, (value & 0x2));
++}
++
++void mps2_add_nor_flash(MPS2TZMachineState *mms)
++{
++    BusState *spi_bus = NULL;
++    DeviceState *flash = NULL;
++    DriveInfo *dinfo = NULL;
++
++    spi_bus = (BusState *)mms->spi[NOR_FLASH_SPI_NO].ssi;
++
++    // -device hmi02g-pc,bus=ssi
++    flash = qdev_new("hmi02g-pc"); //256MB nor flash
++
++    //Options: -drive file=filename,bus=0,unit=0
++    dinfo = drive_get(IF_NONE, 0, 0);
++    if (!dinfo) {
++        error_report("vexpress: error registering flash 0");
++    } else {
++        qdev_prop_set_drive_err(flash, "drive", blk_by_legacy_dinfo(dinfo), &error_fatal);
++    }
++
++    qdev_realize_and_unref(flash, spi_bus, &error_fatal);
++}
++
+ static const RAMInfo *find_raminfo_for_mpc(MPS2TZMachineState *mms, int mpc)
+ {
+     MPS2TZMachineClass *mmc = MPS2TZ_MACHINE_GET_CLASS(mms);
+@@ -1201,6 +1252,9 @@ static void mps2tz_common_init(MachineState *machine)
+ 
+         // add PL111 Color LCD Controller
+         sysbus_create_simple("pl111", 0x40305000, get_sse_irq_in(mms, 125));
++
++        // add 256MB nor-flash device, connect to spi0 by default
++        mps2_add_nor_flash(mms);
+     }
+ 
+     armv7m_load_kernel(ARM_CPU(first_cpu), machine->kernel_filename,
+diff --git a/qemu/hw/block/m25p80.c b/qemu/hw/block/m25p80.c
+index b77503d..25107ea 100644
+--- a/qemu/hw/block/m25p80.c
++++ b/qemu/hw/block/m25p80.c
+@@ -128,6 +128,24 @@ typedef struct FlashPartInfo {
+     .flags = (_flags),\
+     .die_cnt = _die_cnt
+ 
++/* For nor flash with page cache, The page size is 4K. */
++#define INFO_PCFLASH(_part_name, _jedec_id, _ext_id, _sector_size, _n_sectors,\
++                    _flags, _die_cnt)\
++    .part_name = _part_name,\
++    .id = {\
++        ((_jedec_id) >> 16) & 0xff,\
++        ((_jedec_id) >> 8) & 0xff,\
++        (_jedec_id) & 0xff,\
++        ((_ext_id) >> 8) & 0xff,\
++        (_ext_id) & 0xff,\
++          },\
++    .id_len = (!(_jedec_id) ? 0 : (3 + ((_ext_id) ? 2 : 0))),\
++    .sector_size = (_sector_size),\
++    .n_sectors = (_n_sectors),\
++    .page_size = 4096,\
++    .flags = (_flags),\
++    .die_cnt = _die_cnt
++
+ #define JEDEC_NUMONYX 0x20
+ #define JEDEC_WINBOND 0xEF
+ #define JEDEC_SPANSION 0x01
+@@ -261,6 +279,7 @@ static const FlashPartInfo known_devices[] = {
+     { INFO_STACKED("mt25qu01g", 0x20bb21, 0x1040, 64 << 10, 2048, ER_4K, 2) },
+     { INFO_STACKED("mt25ql02g", 0x20ba22, 0x1040, 64 << 10, 4096, ER_4K | ER_32K, 2) },
+     { INFO_STACKED("mt25qu02g", 0x20bb22, 0x1040, 64 << 10, 4096, ER_4K | ER_32K, 2) },
++    { INFO_PCFLASH("hmi02g-pc", 0x20ba23, 0x1040, 64 << 10, 4096, ER_4K | ER_32K, 2) },
+ 
+     /* Spansion -- single (large) sector size only, at least
+      * for the chips listed here (without boot sectors).
+@@ -1481,6 +1500,44 @@ static uint32_t m25p80_transfer8(SSIPeripheral *ss, uint32_t tx)
+     return r;
+ }
+ 
++extern int m25p80_pcache_rd(SSIPeripheral *ss, uint32_t addr, uint8_t *buf, uint32_t len);
++extern int m25p80_pcache_wr(SSIPeripheral *ss, uint32_t addr, uint8_t *buf, uint32_t len);
++
++int m25p80_pcache_rd(SSIPeripheral *ss, uint32_t addr, uint8_t *buf, uint32_t len)
++{
++    Flash *s = M25P80(ss);
++
++    if(s->state != STATE_IDLE) {
++        return -1;
++    }
++
++    s->cur_addr = addr & (s->size - 1);
++    memcpy(buf, &s->storage[s->cur_addr], len);
++    return 0;
++}
++
++int m25p80_pcache_wr(SSIPeripheral *ss, uint32_t addr, uint8_t *buf, uint32_t len)
++{
++    Flash *s = M25P80(ss);
++    uint32_t page_start, page_end;
++
++    if(s->state != STATE_IDLE) {
++        return -1;
++    }
++
++    s->cur_addr = addr & (s->size - 1);
++    memcpy(&s->storage[s->cur_addr], buf, len);
++
++    page_start = s->cur_addr / s->pi->page_size;
++    page_end = page_start + (len / s->pi->page_size);
++    for(; page_start < page_end; page_start++)
++    {
++        flash_sync_dirty(s, page_start);
++        s->dirty_page = page_start;
++    }
++    return 0;
++}
++
+ static void m25p80_realize(SSIPeripheral *ss, Error **errp)
+ {
+     Flash *s = M25P80(ss);
+diff --git a/qemu/hw/misc/mps2-fpgaio.c b/qemu/hw/misc/mps2-fpgaio.c
+index 07b8cbd..d0dd9b0 100644
+--- a/qemu/hw/misc/mps2-fpgaio.c
++++ b/qemu/hw/misc/mps2-fpgaio.c
+@@ -39,6 +39,8 @@ REG32(PSCNTR, 0x20)
+ REG32(SWITCH, 0x28)
+ REG32(MISC, 0x4c)
+ 
++extern void mps2_write_fpgaio_misc(MPS2FPGAIO *fpgaio, uint32_t value);
++
+ static uint32_t counter_from_tickoff(int64_t now, int64_t tick_offset, int frq)
+ {
+     return muldiv64(now - tick_offset, frq, NANOSECONDS_PER_SECOND);
+@@ -222,6 +224,7 @@ static void mps2_fpgaio_write(void *opaque, hwaddr offset, uint64_t value,
+         qemu_log_mask(LOG_UNIMP,
+                       "MPS2 FPGAIO: MISC control bits unimplemented\n");
+         s->misc = value;
++        mps2_write_fpgaio_misc(s, (uint32_t)value);
+         break;
+     case A_CLK1HZ:
+         now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+diff --git a/qemu/hw/ssi/pl022.c b/qemu/hw/ssi/pl022.c
+index 8954ffe..23c4239 100644
+--- a/qemu/hw/ssi/pl022.c
++++ b/qemu/hw/ssi/pl022.c
+@@ -15,6 +15,7 @@
+ #include "hw/ssi/ssi.h"
+ #include "qemu/log.h"
+ #include "qemu/module.h"
++#include "qom/object.h"
+ 
+ //#define DEBUG_PL022 1
+ 
+@@ -70,6 +71,68 @@ static void pl022_update(PL022State *s)
+     qemu_set_irq(s->irq, (s->is & s->im) != 0);
+ }
+ 
++static void pl022_page_cache_enable(PL022State *s)
++{
++    MemoryRegion *root = NULL;
++    MemoryRegionSection *mem_section = &s->pcache_mem;
++
++    root = sysbus_address_space(SYS_BUS_DEVICE(s));
++
++    if (mem_section->mr) {
++        memory_region_unref(mem_section->mr);
++        mem_section->mr = NULL;
++    }
++
++    *mem_section = memory_region_find(root, s->pcache_base, s->pcache_size);
++    if (!mem_section->mr) {
++        return;
++    }
++
++    if (int128_get64(mem_section->size) < s->pcache_size ||
++            !memory_region_is_ram(mem_section->mr)) {
++        memory_region_unref(mem_section->mr);
++        mem_section->mr = NULL;
++    }
++}
++
++extern int m25p80_pcache_rd(SSIPeripheral *ss, uint32_t addr, uint8_t *buf, uint32_t len);
++extern int m25p80_pcache_wr(SSIPeripheral *ss, uint32_t addr, uint8_t *buf, uint32_t len);
++
++static void pl022_page_cache_transfer(PL022State *s)
++{
++    uint8_t *src = NULL;
++    BusState *b = BUS(s->ssi);
++    BusChild *kid;
++    SSIPeripheral *dev;
++    SSIPeripheralClass *ssc;
++
++    if (!s->pcache_mem.mr) {
++        DPRINTF("Invalid memory region!\n");
++        return;
++    }
++
++    src = memory_region_get_ram_ptr(s->pcache_mem.mr) + \
++            s->pcache_mem.offset_within_region;
++
++    QTAILQ_FOREACH(kid, &b->children, sibling)
++    {
++        dev = SSI_PERIPHERAL(kid->child);
++        ssc = SSI_PERIPHERAL_GET_CLASS(dev);
++
++        if ((!dev->cs && ssc->cs_polarity == SSI_CS_LOW) ||
++            (dev->cs && ssc->cs_polarity == SSI_CS_HIGH) ||
++            (ssc->cs_polarity == SSI_CS_NONE))
++        {
++            if(s->pcache_state != 1) {
++                m25p80_pcache_wr(dev, s->pcache_addr, src, s->pcache_size);
++            } else {
++                m25p80_pcache_rd(dev, s->pcache_addr, src, s->pcache_size);
++            }
++        }
++    }
++    s->pcache_state = 0;
++}
++
+ static void pl022_xfer(PL022State *s)
+ {
+     int i;
+@@ -152,6 +215,12 @@ static uint64_t pl022_read(void *opaque, hwaddr offset,
+     case 0x24: /* DMACR */
+         /* Not implemented.  */
+         return 0;
++    case 0x28: /* page cache size */
++        return s->pcache_size;
++    case 0x2C: /* page cache base addr */
++        return s->pcache_base;
++    case 0x38: /* page cache state */
++        return s->pcache_state;
+     default:
+         qemu_log_mask(LOG_GUEST_ERROR,
+                       "pl022_read: Bad offset %x\n", (int)offset);
+@@ -208,6 +277,28 @@ static void pl022_write(void *opaque, hwaddr offset,
+             qemu_log_mask(LOG_UNIMP, "pl022: DMA not implemented\n");
+         }
+         break;
++    case 0x28:
++        s->pcache_size = value;
++        if(value && s->pcache_base) { //if all set, enable cache
++            pl022_page_cache_enable(s);
++        }
++        break;
++    case 0x2C:
++        s->pcache_base = value;
++        if(value && s->pcache_size) { //if all set, enable cache
++            pl022_page_cache_enable(s);
++        }
++        break;
++    case 0x30:
++        s->pcache_addr = value;
++        s->pcache_state = 1; //set read busy
++        pl022_page_cache_transfer(s); //start read
++        break;
++    case 0x34:
++        s->pcache_addr = value;
++        s->pcache_state = 2; //set write busy
++        pl022_page_cache_transfer(s); //start write
++        break;
+     default:
+         qemu_log_mask(LOG_GUEST_ERROR,
+                       "pl022_write: Bad offset %x\n", (int)offset);
+@@ -257,6 +348,10 @@ static const VMStateDescription vmstate_pl022 = {
+         VMSTATE_UINT32(cpsr, PL022State),
+         VMSTATE_UINT32(is, PL022State),
+         VMSTATE_UINT32(im, PL022State),
++        VMSTATE_UINT32(pcache_size, PL022State),
++        VMSTATE_UINT32(pcache_base, PL022State),
++        VMSTATE_UINT32(pcache_addr, PL022State),
++        VMSTATE_UINT32(pcache_state, PL022State),
+         VMSTATE_INT32(tx_fifo_head, PL022State),
+         VMSTATE_INT32(rx_fifo_head, PL022State),
+         VMSTATE_INT32(tx_fifo_len, PL022State),
+diff --git a/qemu/hw/ssi/ssi.c b/qemu/hw/ssi/ssi.c
+index 003931f..dd72434 100644
+--- a/qemu/hw/ssi/ssi.c
++++ b/qemu/hw/ssi/ssi.c
+@@ -127,6 +127,22 @@ uint32_t ssi_transfer(SSIBus *bus, uint32_t val)
+     return r;
+ }
+ 
++void ssi_chipselect(SSIBus *bus, int level)
++{
++    BusState *b = BUS(bus);
++    BusChild *kid;
++    SSIPeripheralClass *ssc;
++    bool cs = !!level;
++
++    QTAILQ_FOREACH(kid, &b->children, sibling) {
++        SSIPeripheral *peripheral = SSI_PERIPHERAL(kid->child);
++        ssc = SSI_PERIPHERAL_GET_CLASS(peripheral);
++        if (ssc->set_cs) {
++            ssc->set_cs(peripheral, cs);
++        }
++    }
++}
++
+ const VMStateDescription vmstate_ssi_peripheral = {
+     .name = "SSISlave",
+     .version_id = 1,
+diff --git a/qemu/include/hw/ssi/pl022.h b/qemu/include/hw/ssi/pl022.h
+index 25d58db..88c25e4 100644
+--- a/qemu/include/hw/ssi/pl022.h
++++ b/qemu/include/hw/ssi/pl022.h
+@@ -32,6 +32,7 @@ struct PL022State {
+     SysBusDevice parent_obj;
+ 
+     MemoryRegion iomem;
++    MemoryRegionSection pcache_mem; // For page cache
+     uint32_t cr0;
+     uint32_t cr1;
+     uint32_t bitmask;
+@@ -39,6 +40,10 @@ struct PL022State {
+     uint32_t cpsr;
+     uint32_t is;
+     uint32_t im;
++    uint32_t pcache_size;
++    uint32_t pcache_base;
++    uint32_t pcache_addr;
++    uint32_t pcache_state;
+     /* The FIFO head points to the next empty entry.  */
+     int tx_fifo_head;
+     int rx_fifo_head;
+diff --git a/qemu/include/hw/ssi/ssi.h b/qemu/include/hw/ssi/ssi.h
+index f411858..871a26f 100644
+--- a/qemu/include/hw/ssi/ssi.h
++++ b/qemu/include/hw/ssi/ssi.h
+@@ -105,5 +105,6 @@ bool ssi_realize_and_unref(DeviceState *dev, SSIBus *bus, Error **errp);
+ SSIBus *ssi_create_bus(DeviceState *parent, const char *name);
+ 
+ uint32_t ssi_transfer(SSIBus *bus, uint32_t val);
++void ssi_chipselect(SSIBus *bus, int level);
+ 
+ #endif

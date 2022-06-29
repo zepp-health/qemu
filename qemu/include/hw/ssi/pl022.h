@@ -32,6 +32,7 @@ struct PL022State {
     SysBusDevice parent_obj;
 
     MemoryRegion iomem;
+    MemoryRegionSection pcache_mem; // For page cache
     uint32_t cr0;
     uint32_t cr1;
     uint32_t bitmask;
@@ -39,6 +40,10 @@ struct PL022State {
     uint32_t cpsr;
     uint32_t is;
     uint32_t im;
+    uint32_t pcache_size;
+    uint32_t pcache_base;
+    uint32_t pcache_addr;
+    uint32_t pcache_state;
     /* The FIFO head points to the next empty entry.  */
     int tx_fifo_head;
     int rx_fifo_head;
