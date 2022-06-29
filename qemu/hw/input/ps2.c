@@ -123,6 +123,8 @@ typedef struct {
     int mouse_dx; /* current values, needed for 'poll' mode */
     int mouse_dy;
     int mouse_dz;
+    int mouse_x; /* rel data for Linux SDL2 */
+    int mouse_y; /* rel data for Linux SDL2 */
     uint8_t mouse_buttons;
 } PS2MouseState;
 
@@ -713,7 +715,7 @@ void ps2_keyboard_set_translation(void *opaque, int mode)
 static int ps2_mouse_send_packet(PS2MouseState *s)
 {
     /* IMPS/2 and IMEX send 4 bytes, PS2 sends 3 bytes */
-    const int needed = s->mouse_type ? 4 : 3;
+    const int needed = s->mouse_type ? 4 : 4;
     unsigned int b;
     int dx1, dy1, dz1;
 
@@ -733,6 +735,33 @@ static int ps2_mouse_send_packet(PS2MouseState *s)
         dy1 = 127;
     else if (dy1 < -127)
         dy1 = -127;
+
+    /* Patch For Linux (SDL)
+     * PS2: Use mouse position value instead of position difference. */
+    if((s->mouse_type == 0) && ((s->mouse_x & 0xFFFFE000) == 0x7FFF0000))
+    {
+        //high bit set to 1
+        b = 0x88 | ((dx1 < 0) << 4) | ((dy1 < 0) << 5) | (s->mouse_buttons & 0x07);
+
+        dx1  = (s->mouse_x >> 8) & 0x0F; // Get bit8:bit12 as bit0:bit3
+        dx1 |= (s->mouse_y >> 4) & 0xF0; // Get bit8:bit12 as bit7:bit4
+
+        ps2_queue_noirq(&s->common, b);
+        ps2_queue_noirq(&s->common, (s->mouse_x & 0xff));
+        ps2_queue_noirq(&s->common, (dx1 & 0xff));
+        ps2_queue_noirq(&s->common, (s->mouse_y & 0xff));
+        //printf("ps2 mouse move: %d %d\n", s->mouse_x & 0x7ff, s->mouse_y & 0x7ff);
+
+        ps2_raise_irq(&s->common);
+
+        trace_ps2_mouse_send_packet(s, dx1, dy1, dz1, b);
+
+        s->mouse_dx = 0;
+        s->mouse_dy = 0;
+        s->mouse_dz = 0;
+        return 1;
+    }
+
     b = 0x08 | ((dx1 < 0) << 4) | ((dy1 < 0) << 5) | (s->mouse_buttons & 0x07);
     ps2_queue_noirq(&s->common, b);
     ps2_queue_noirq(&s->common, dx1 & 0xff);
@@ -741,6 +770,7 @@ static int ps2_mouse_send_packet(PS2MouseState *s)
     switch(s->mouse_type) {
     default:
         break;
+    case 0:
     case 3:
         if (dz1 > 127)
             dz1 = 127;
@@ -792,8 +822,10 @@ static void ps2_mouse_event(DeviceState *dev, QemuConsole *src,
         move = evt->u.rel.data;
         if (move->axis == INPUT_AXIS_X) {
             s->mouse_dx += move->value;
+            s->mouse_x = move->value;
         } else if (move->axis == INPUT_AXIS_Y) {
             s->mouse_dy -= move->value;
+            s->mouse_y = move->value;
         }
         break;
 

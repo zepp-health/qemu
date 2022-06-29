@@ -68,6 +68,9 @@
 #define COCOA_DEBUG(...)  ((void) 0)
 #endif
 
+//patch for non-absolute input(such as ps2), treat it as absolute.
+#define PATCH_NONABS_ENABLE  1
+
 #define cgrect(nsrect) (*(CGRect *)&(nsrect))
 
 typedef struct {
@@ -1018,8 +1021,17 @@ QemuCocoaView *cocoaView;
                  * clicks in the titlebar.
                  */
                 if ([self screenContainsPoint:p]) {
+#if PATCH_NONABS_ENABLE
+                    //Fix linux mouse drift, use position value
+                    int x = 0x7FFF0000 | (((int)[event deltaX] == 0) << 11) | ((int)p.x & 0x7FF);
+                    int y = 0x7FFF0000 | (((int)[event deltaY] == 0) << 11) | ((int)(screen.height - p.y) & 0x7FF);
+                    //fprintf (stdout, "mouse point %d:%d\n", x&0x7FF, y&0x7FF);
+                    qemu_input_queue_rel(dcl.con, INPUT_AXIS_X, x);
+                    qemu_input_queue_rel(dcl.con, INPUT_AXIS_Y, y);
+#else
                     qemu_input_queue_abs(dcl.con, INPUT_AXIS_X, p.x, 0, screen.width);
                     qemu_input_queue_abs(dcl.con, INPUT_AXIS_Y, screen.height - p.y, 0, screen.height);
+#endif
                 }
             } else {
                 qemu_input_queue_rel(dcl.con, INPUT_AXIS_X, (int)[event deltaX]);
@@ -1044,6 +1056,9 @@ QemuCocoaView *cocoaView;
             [normalWindow setTitle:@"QEMU - (Press ctrl + alt + g to release Mouse)"];
     }
     [self hideCursor];
+#if PATCH_NONABS_ENABLE
+    isAbsoluteEnabled = TRUE;
+#endif
     CGAssociateMouseAndMouseCursorPosition(isAbsoluteEnabled);
     isMouseGrabbed = TRUE; // while isMouseGrabbed = TRUE, QemuCocoaApp sends all events to [cocoaView handleEvent:]
 }
@@ -1061,6 +1076,9 @@ QemuCocoaView *cocoaView;
     [self unhideCursor];
     CGAssociateMouseAndMouseCursorPosition(TRUE);
     isMouseGrabbed = FALSE;
+#if PATCH_NONABS_ENABLE
+    isAbsoluteEnabled = FALSE;
+#endif
 }
 
 - (void) setAbsoluteEnabled:(BOOL)tIsAbsoluteEnabled {

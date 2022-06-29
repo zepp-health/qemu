@@ -228,6 +228,9 @@ static void sdl_grab_start(struct sdl2_console *scon)
     }
     SDL_SetWindowGrab(scon->real_window, SDL_TRUE);
     gui_grab = 1;
+#if __linux__
+    absolute_enabled = 1;
+#endif
     win32_kbd_set_grab(true);
     sdl_update_caption(scon);
 }
@@ -236,6 +239,9 @@ static void sdl_grab_end(struct sdl2_console *scon)
 {
     SDL_SetWindowGrab(scon->real_window, SDL_FALSE);
     gui_grab = 0;
+#if __linux__
+    absolute_enabled = 0;
+#endif
     win32_kbd_set_grab(false);
     sdl_show_cursor(scon);
     sdl_update_caption(scon);
@@ -300,8 +306,16 @@ static void sdl_send_mouse_event(struct sdl2_console *scon, int dx, int dy,
             dx = x;
             dy = y;
         }
+#if __linux__
+        //Fix linux mouse drift, use position value
+        x = 0x7FFF0000 | ((dx == 0) << 11) | (x & 0x7FF);
+        y = 0x7FFF0000 | ((dy == 0) << 11) | (y & 0x7FF);
+        qemu_input_queue_rel(scon->dcl.con, INPUT_AXIS_X, x);
+        qemu_input_queue_rel(scon->dcl.con, INPUT_AXIS_Y, y);
+#else
         qemu_input_queue_rel(scon->dcl.con, INPUT_AXIS_X, dx);
         qemu_input_queue_rel(scon->dcl.con, INPUT_AXIS_Y, dy);
+#endif
     }
     qemu_input_event_sync();
 }

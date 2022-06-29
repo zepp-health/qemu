@@ -1,0 +1,309 @@
+diff --git a/qemu/hw/input/ps2.c b/qemu/hw/input/ps2.c
+index 9376a8f..ce0ea74 100644
+--- a/qemu/hw/input/ps2.c
++++ b/qemu/hw/input/ps2.c
+@@ -123,6 +123,8 @@ typedef struct {
+     int mouse_dx; /* current values, needed for 'poll' mode */
+     int mouse_dy;
+     int mouse_dz;
++    int mouse_x; /* rel data for Linux SDL2 */
++    int mouse_y; /* rel data for Linux SDL2 */
+     uint8_t mouse_buttons;
+ } PS2MouseState;
+ 
+@@ -713,7 +715,7 @@ void ps2_keyboard_set_translation(void *opaque, int mode)
+ static int ps2_mouse_send_packet(PS2MouseState *s)
+ {
+     /* IMPS/2 and IMEX send 4 bytes, PS2 sends 3 bytes */
+-    const int needed = s->mouse_type ? 4 : 3;
++    const int needed = s->mouse_type ? 4 : 4;
+     unsigned int b;
+     int dx1, dy1, dz1;
+ 
+@@ -733,6 +735,33 @@ static int ps2_mouse_send_packet(PS2MouseState *s)
+         dy1 = 127;
+     else if (dy1 < -127)
+         dy1 = -127;
++
++    /* Patch For Linux (SDL)
++     * PS2: Use mouse position value instead of position difference. */
++    if((s->mouse_type == 0) && ((s->mouse_x & 0xFFFFE000) == 0x7FFF0000))
++    {
++        //high bit set to 1
++        b = 0x88 | ((dx1 < 0) << 4) | ((dy1 < 0) << 5) | (s->mouse_buttons & 0x07);
++
++        dx1  = (s->mouse_x >> 8) & 0x0F; // Get bit8:bit12 as bit0:bit3
++        dx1 |= (s->mouse_y >> 4) & 0xF0; // Get bit8:bit12 as bit7:bit4
++
++        ps2_queue_noirq(&s->common, b);
++        ps2_queue_noirq(&s->common, (s->mouse_x & 0xff));
++        ps2_queue_noirq(&s->common, (dx1 & 0xff));
++        ps2_queue_noirq(&s->common, (s->mouse_y & 0xff));
++        //printf("ps2 mouse move: %d %d\n", s->mouse_x & 0x7ff, s->mouse_y & 0x7ff);
++
++        ps2_raise_irq(&s->common);
++
++        trace_ps2_mouse_send_packet(s, dx1, dy1, dz1, b);
++
++        s->mouse_dx = 0;
++        s->mouse_dy = 0;
++        s->mouse_dz = 0;
++        return 1;
++    }
++
+     b = 0x08 | ((dx1 < 0) << 4) | ((dy1 < 0) << 5) | (s->mouse_buttons & 0x07);
+     ps2_queue_noirq(&s->common, b);
+     ps2_queue_noirq(&s->common, dx1 & 0xff);
+@@ -741,6 +770,7 @@ static int ps2_mouse_send_packet(PS2MouseState *s)
+     switch(s->mouse_type) {
+     default:
+         break;
++    case 0:
+     case 3:
+         if (dz1 > 127)
+             dz1 = 127;
+@@ -792,8 +822,10 @@ static void ps2_mouse_event(DeviceState *dev, QemuConsole *src,
+         move = evt->u.rel.data;
+         if (move->axis == INPUT_AXIS_X) {
+             s->mouse_dx += move->value;
++            s->mouse_x = move->value;
+         } else if (move->axis == INPUT_AXIS_Y) {
+             s->mouse_dy -= move->value;
++            s->mouse_y = move->value;
+         }
+         break;
+ 
+diff --git a/qemu/ui/cocoa.m b/qemu/ui/cocoa.m
+index 69745c4..3116844 100644
+--- a/qemu/ui/cocoa.m
++++ b/qemu/ui/cocoa.m
+@@ -68,6 +68,9 @@
+ #define COCOA_DEBUG(...)  ((void) 0)
+ #endif
+ 
++//patch for non-absolute input(such as ps2), treat it as absolute.
++#define PATCH_NONABS_ENABLE  1
++
+ #define cgrect(nsrect) (*(CGRect *)&(nsrect))
+ 
+ typedef struct {
+@@ -1018,8 +1021,17 @@ QemuCocoaView *cocoaView;
+                  * clicks in the titlebar.
+                  */
+                 if ([self screenContainsPoint:p]) {
++#if PATCH_NONABS_ENABLE
++                    //Fix linux mouse drift, use position value
++                    int x = 0x7FFF0000 | (((int)[event deltaX] == 0) << 11) | ((int)p.x & 0x7FF);
++                    int y = 0x7FFF0000 | (((int)[event deltaY] == 0) << 11) | ((int)(screen.height - p.y) & 0x7FF);
++                    //fprintf (stdout, "mouse point %d:%d\n", x&0x7FF, y&0x7FF);
++                    qemu_input_queue_rel(dcl.con, INPUT_AXIS_X, x);
++                    qemu_input_queue_rel(dcl.con, INPUT_AXIS_Y, y);
++#else
+                     qemu_input_queue_abs(dcl.con, INPUT_AXIS_X, p.x, 0, screen.width);
+                     qemu_input_queue_abs(dcl.con, INPUT_AXIS_Y, screen.height - p.y, 0, screen.height);
++#endif
+                 }
+             } else {
+                 qemu_input_queue_rel(dcl.con, INPUT_AXIS_X, (int)[event deltaX]);
+@@ -1044,6 +1056,9 @@ QemuCocoaView *cocoaView;
+             [normalWindow setTitle:@"QEMU - (Press ctrl + alt + g to release Mouse)"];
+     }
+     [self hideCursor];
++#if PATCH_NONABS_ENABLE
++    isAbsoluteEnabled = TRUE;
++#endif
+     CGAssociateMouseAndMouseCursorPosition(isAbsoluteEnabled);
+     isMouseGrabbed = TRUE; // while isMouseGrabbed = TRUE, QemuCocoaApp sends all events to [cocoaView handleEvent:]
+ }
+@@ -1061,6 +1076,9 @@ QemuCocoaView *cocoaView;
+     [self unhideCursor];
+     CGAssociateMouseAndMouseCursorPosition(TRUE);
+     isMouseGrabbed = FALSE;
++#if PATCH_NONABS_ENABLE
++    isAbsoluteEnabled = FALSE;
++#endif
+ }
+ 
+ - (void) setAbsoluteEnabled:(BOOL)tIsAbsoluteEnabled {
+diff --git a/qemu/ui/gtk.c b/qemu/ui/gtk.c
+index 6a1f65d..041b8ca 100644
+--- a/qemu/ui/gtk.c
++++ b/qemu/ui/gtk.c
+@@ -132,6 +132,10 @@ DECLARE_INSTANCE_CHECKER(VCChardev, VC_CHARDEV,
+ 
+ bool gtk_use_gl_area;
+ 
++#if __linux__
++static int gui_grab = 0;
++#endif
++
+ static void gd_grab_pointer(VirtualConsole *vc, const char *reason);
+ static void gd_ungrab_pointer(GtkDisplayState *s);
+ static void gd_grab_keyboard(VirtualConsole *vc, const char *reason);
+@@ -883,10 +887,47 @@ static gboolean gd_motion_event(GtkWidget *widget, GdkEventMotion *motion,
+         qemu_input_queue_abs(vc->gfx.dcl.con, INPUT_AXIS_Y, y,
+                              0, surface_height(vc->gfx.ds));
+         qemu_input_event_sync();
++#if __linux__
++    } else if (s->ptr_owner == vc) {
++        int max_x = ww - 1;
++        int max_y = wh - 1;
++        if (gui_grab && !s->full_screen
++            && (x <= 0 || y <= 0 || x >= max_x || y >= max_y)) {
++            gd_ungrab_keyboard(s);
++            gd_ungrab_pointer(s);
++            gd_update_cursor(vc);
++        }
++        if (!gui_grab && 
++            (x > 0 && x < max_x && y > 0 && y < max_y)) {
++            gd_grab_keyboard(vc, "user-request-main-window");
++            gd_grab_pointer(vc, "user-request-main-window");
++            gd_update_cursor(vc);
++        }
++
++        if (gui_grab) {
++            x = 0x7FFF0000 | (0 << 11) | (x & 0x7FF);
++            y = 0x7FFF0000 | (0 << 11) | (y & 0x7FF);
++            qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_X, x);
++            qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_Y, y);
++            qemu_input_event_sync();
++        }
++#else
+     } else if (s->last_set && s->ptr_owner == vc) {
++#ifdef WINVER
++        if(x >= 0 && x < fbw && y >= 0 && y < fbh) {
++            //fprintf(stdout, "mouse move %d: %d\n", x, y);
++            x = 0x7FFF0000 | (0 << 11) | (x & 0x7FF);
++            y = 0x7FFF0000 | (0 << 11) | (y & 0x7FF);
++            qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_X, x);
++            qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_Y, y);
++            qemu_input_event_sync();
++        }
++#else
+         qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_X, x - s->last_x);
+         qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_Y, y - s->last_y);
+         qemu_input_event_sync();
++#endif
++#endif
+     }
+     s->last_x = x;
+     s->last_y = y;
+@@ -932,6 +973,13 @@ static gboolean gd_button_event(GtkWidget *widget, GdkEventButton *button,
+     GtkDisplayState *s = vc->s;
+     InputButton btn;
+ 
++#if __linux__
++    if (!gui_grab && !qemu_input_is_absolute() &&
++        button->button == 1 && button->type == GDK_BUTTON_PRESS) {
++        gd_grab_pointer(vc, "relative-mode-click");
++    }
++#endif
++
+     /* implicitly grab the input at the first click in the relative mode */
+     if (button->button == 1 && button->type == GDK_BUTTON_PRESS &&
+         !qemu_input_is_absolute() && s->ptr_owner != vc) {
+@@ -960,6 +1008,43 @@ static gboolean gd_button_event(GtkWidget *widget, GdkEventButton *button,
+ 
+     qemu_input_queue_btn(vc->gfx.dcl.con, btn,
+                          button->type == GDK_BUTTON_PRESS);
++
++#if __linux__
++    if (gui_grab) {
++        int x = 0x7FFF0000 | (1 << 11) | ((int)button->x & 0x7FF);
++        int y = 0x7FFF0000 | (1 << 11) | ((int)button->y & 0x7FF);
++        qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_X, x);
++        qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_Y, y);
++    }
++#endif
++
++#ifdef WINVER
++    GdkWindow *window = gtk_widget_get_window(vc->gfx.drawing_area);
++    int ww = gdk_window_get_width(window);
++    int wh = gdk_window_get_height(window);
++    int ws = gdk_window_get_scale_factor(window);
++	int fbw = surface_width(vc->gfx.ds) * vc->gfx.scale_x;
++    int fbh = surface_height(vc->gfx.ds) * vc->gfx.scale_y;
++	int mx = 0;
++	int my = 0;
++    if (ww > fbw) {
++        mx = (ww - fbw) / 2;
++    }
++    if (wh > fbh) {
++        my = (wh - fbh) / 2;
++    }
++
++    int x = (button->x - mx) / vc->gfx.scale_x * ws;
++    int y = (button->y - my) / vc->gfx.scale_y * ws;
++
++    if(x >= 0 && x < fbw && y >= 0 && y < fbh) {
++        //fprintf(stdout, "mouse btn %d: %d\n", x, y);
++        x = 0x7FFF0000 | (1 << 11) | (x & 0x7FF);
++        y = 0x7FFF0000 | (1 << 11) | (y & 0x7FF);
++        qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_X, x);
++        qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_Y, y);
++    }
++#endif
+     qemu_input_event_sync();
+     return TRUE;
+ }
+@@ -1517,6 +1602,9 @@ static void gd_grab_pointer(VirtualConsole *vc, const char *reason)
+     }
+ 
+     gd_grab_update(vc, vc->s->kbd_owner == vc, true);
++#if __linux__
++    gui_grab = 1;
++#endif
+     gdk_device_get_position(gd_get_pointer(display),
+                             NULL, &vc->s->grab_x_root, &vc->s->grab_y_root);
+     vc->s->ptr_owner = vc;
+@@ -1536,6 +1624,9 @@ static void gd_ungrab_pointer(GtkDisplayState *s)
+ 
+     display = gtk_widget_get_display(vc->gfx.drawing_area);
+     gd_grab_update(vc, vc->s->kbd_owner == vc, false);
++#if __linux__
++    gui_grab = 0;
++#endif
+     gdk_device_warp(gd_get_pointer(display),
+                     gtk_widget_get_screen(vc->gfx.drawing_area),
+                     vc->s->grab_x_root, vc->s->grab_y_root);
+diff --git a/qemu/ui/sdl2.c b/qemu/ui/sdl2.c
+index 0bd3050..f18022f 100644
+--- a/qemu/ui/sdl2.c
++++ b/qemu/ui/sdl2.c
+@@ -228,6 +228,9 @@ static void sdl_grab_start(struct sdl2_console *scon)
+     }
+     SDL_SetWindowGrab(scon->real_window, SDL_TRUE);
+     gui_grab = 1;
++#if __linux__
++    absolute_enabled = 1;
++#endif
+     win32_kbd_set_grab(true);
+     sdl_update_caption(scon);
+ }
+@@ -236,6 +239,9 @@ static void sdl_grab_end(struct sdl2_console *scon)
+ {
+     SDL_SetWindowGrab(scon->real_window, SDL_FALSE);
+     gui_grab = 0;
++#if __linux__
++    absolute_enabled = 0;
++#endif
+     win32_kbd_set_grab(false);
+     sdl_show_cursor(scon);
+     sdl_update_caption(scon);
+@@ -300,8 +306,16 @@ static void sdl_send_mouse_event(struct sdl2_console *scon, int dx, int dy,
+             dx = x;
+             dy = y;
+         }
++#if __linux__
++        //Fix linux mouse drift, use position value
++        x = 0x7FFF0000 | ((dx == 0) << 11) | (x & 0x7FF);
++        y = 0x7FFF0000 | ((dy == 0) << 11) | (y & 0x7FF);
++        qemu_input_queue_rel(scon->dcl.con, INPUT_AXIS_X, x);
++        qemu_input_queue_rel(scon->dcl.con, INPUT_AXIS_Y, y);
++#else
+         qemu_input_queue_rel(scon->dcl.con, INPUT_AXIS_X, dx);
+         qemu_input_queue_rel(scon->dcl.con, INPUT_AXIS_Y, dy);
++#endif
+     }
+     qemu_input_event_sync();
+ }

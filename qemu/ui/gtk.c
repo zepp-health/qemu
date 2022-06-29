@@ -132,6 +132,10 @@ DECLARE_INSTANCE_CHECKER(VCChardev, VC_CHARDEV,
 
 bool gtk_use_gl_area;
 
+#if __linux__
+static int gui_grab = 0;
+#endif
+
 static void gd_grab_pointer(VirtualConsole *vc, const char *reason);
 static void gd_ungrab_pointer(GtkDisplayState *s);
 static void gd_grab_keyboard(VirtualConsole *vc, const char *reason);
@@ -883,10 +887,47 @@ static gboolean gd_motion_event(GtkWidget *widget, GdkEventMotion *motion,
         qemu_input_queue_abs(vc->gfx.dcl.con, INPUT_AXIS_Y, y,
                              0, surface_height(vc->gfx.ds));
         qemu_input_event_sync();
+#if __linux__
+    } else if (s->ptr_owner == vc) {
+        int max_x = ww - 1;
+        int max_y = wh - 1;
+        if (gui_grab && !s->full_screen
+            && (x <= 0 || y <= 0 || x >= max_x || y >= max_y)) {
+            gd_ungrab_keyboard(s);
+            gd_ungrab_pointer(s);
+            gd_update_cursor(vc);
+        }
+        if (!gui_grab && 
+            (x > 0 && x < max_x && y > 0 && y < max_y)) {
+            gd_grab_keyboard(vc, "user-request-main-window");
+            gd_grab_pointer(vc, "user-request-main-window");
+            gd_update_cursor(vc);
+        }
+
+        if (gui_grab) {
+            x = 0x7FFF0000 | (0 << 11) | (x & 0x7FF);
+            y = 0x7FFF0000 | (0 << 11) | (y & 0x7FF);
+            qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_X, x);
+            qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_Y, y);
+            qemu_input_event_sync();
+        }
+#else
     } else if (s->last_set && s->ptr_owner == vc) {
+#ifdef WINVER
+        if(x >= 0 && x < fbw && y >= 0 && y < fbh) {
+            //fprintf(stdout, "mouse move %d: %d\n", x, y);
+            x = 0x7FFF0000 | (0 << 11) | (x & 0x7FF);
+            y = 0x7FFF0000 | (0 << 11) | (y & 0x7FF);
+            qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_X, x);
+            qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_Y, y);
+            qemu_input_event_sync();
+        }
+#else
         qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_X, x - s->last_x);
         qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_Y, y - s->last_y);
         qemu_input_event_sync();
+#endif
+#endif
     }
     s->last_x = x;
     s->last_y = y;
@@ -932,6 +973,13 @@ static gboolean gd_button_event(GtkWidget *widget, GdkEventButton *button,
     GtkDisplayState *s = vc->s;
     InputButton btn;
 
+#if __linux__
+    if (!gui_grab && !qemu_input_is_absolute() &&
+        button->button == 1 && button->type == GDK_BUTTON_PRESS) {
+        gd_grab_pointer(vc, "relative-mode-click");
+    }
+#endif
+
     /* implicitly grab the input at the first click in the relative mode */
     if (button->button == 1 && button->type == GDK_BUTTON_PRESS &&
         !qemu_input_is_absolute() && s->ptr_owner != vc) {
@@ -960,6 +1008,43 @@ static gboolean gd_button_event(GtkWidget *widget, GdkEventButton *button,
 
     qemu_input_queue_btn(vc->gfx.dcl.con, btn,
                          button->type == GDK_BUTTON_PRESS);
+
+#if __linux__
+    if (gui_grab) {
+        int x = 0x7FFF0000 | (1 << 11) | ((int)button->x & 0x7FF);
+        int y = 0x7FFF0000 | (1 << 11) | ((int)button->y & 0x7FF);
+        qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_X, x);
+        qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_Y, y);
+    }
+#endif
+
+#ifdef WINVER
+    GdkWindow *window = gtk_widget_get_window(vc->gfx.drawing_area);
+    int ww = gdk_window_get_width(window);
+    int wh = gdk_window_get_height(window);
+    int ws = gdk_window_get_scale_factor(window);
+	int fbw = surface_width(vc->gfx.ds) * vc->gfx.scale_x;
+    int fbh = surface_height(vc->gfx.ds) * vc->gfx.scale_y;
+	int mx = 0;
+	int my = 0;
+    if (ww > fbw) {
+        mx = (ww - fbw) / 2;
+    }
+    if (wh > fbh) {
+        my = (wh - fbh) / 2;
+    }
+
+    int x = (button->x - mx) / vc->gfx.scale_x * ws;
+    int y = (button->y - my) / vc->gfx.scale_y * ws;
+
+    if(x >= 0 && x < fbw && y >= 0 && y < fbh) {
+        //fprintf(stdout, "mouse btn %d: %d\n", x, y);
+        x = 0x7FFF0000 | (1 << 11) | (x & 0x7FF);
+        y = 0x7FFF0000 | (1 << 11) | (y & 0x7FF);
+        qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_X, x);
+        qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_Y, y);
+    }
+#endif
     qemu_input_event_sync();
     return TRUE;
 }
@@ -1517,6 +1602,9 @@ static void gd_grab_pointer(VirtualConsole *vc, const char *reason)
     }
 
     gd_grab_update(vc, vc->s->kbd_owner == vc, true);
+#if __linux__
+    gui_grab = 1;
+#endif
     gdk_device_get_position(gd_get_pointer(display),
                             NULL, &vc->s->grab_x_root, &vc->s->grab_y_root);
     vc->s->ptr_owner = vc;
@@ -1536,6 +1624,9 @@ static void gd_ungrab_pointer(GtkDisplayState *s)
 
     display = gtk_widget_get_display(vc->gfx.drawing_area);
     gd_grab_update(vc, vc->s->kbd_owner == vc, false);
+#if __linux__
+    gui_grab = 0;
+#endif
     gdk_device_warp(gd_get_pointer(display),
                     gtk_widget_get_screen(vc->gfx.drawing_area),
                     vc->s->grab_x_root, vc->s->grab_y_root);

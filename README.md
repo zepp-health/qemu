@@ -17,6 +17,7 @@ Repository: https://gitlab.com/qemu-project/qemu.git
 ## Patch
 
 Folder "qemu_patch" contains all the patches.  
+Many of the changes are not universal, just for ease of use.  
 
 ## Build
 QEMU is multi-platform software intended to be buildable on all modern
