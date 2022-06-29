@@ -1,0 +1,117 @@
+diff --git a/qemu/hw/arm/mps2-tz.c b/qemu/hw/arm/mps2-tz.c
+index f40e854..5561d66 100644
+--- a/qemu/hw/arm/mps2-tz.c
++++ b/qemu/hw/arm/mps2-tz.c
+@@ -201,7 +201,7 @@ static const uint32_t an524_oscclk[] = {
+ static const RAMInfo an505_raminfo[] = { {
+         .name = "ssram-0",
+         .base = 0x00000000,
+-        .size = 0x00400000,
++        .size = 0x00800000,
+         .mpc = 0,
+         .mrindex = 0,
+     }, {
+@@ -216,18 +216,11 @@ static const RAMInfo an505_raminfo[] = { {
+         .size = 0x00200000,
+         .mpc = 2,
+         .mrindex = 2,
+-    }, {
+-        .name = "ssram-0-alias",
+-        .base = 0x00400000,
+-        .size = 0x00400000,
+-        .mpc = 0,
+-        .mrindex = 3,
+-        .flags = IS_ALIAS,
+     }, {
+         /* Use the largest bit of contiguous RAM as our "system memory" */
+         .name = "mps.ram",
+         .base = 0x80000000,
+-        .size = 16 * MiB,
++        .size = 128 * MiB,
+         .mpc = -1,
+         .mrindex = -1,
+     }, {
+@@ -739,6 +732,9 @@ static MemoryRegion *make_rtc(MPS2TZMachineState *mms, void *opaque,
+     object_initialize_child(OBJECT(mms), name, pl031, TYPE_PL031);
+     s = SYS_BUS_DEVICE(pl031);
+     sysbus_realize(s, &error_fatal);
++    if(irqs != NULL && irqs[0] > 0) {
++        sysbus_connect_irq(s, 0, get_sse_irq_in(mms, irqs[0]));
++    }
+     /*
+      * The board docs don't give an IRQ number for the PL031, so
+      * presumably it is not connected.
+@@ -831,6 +827,8 @@ static void mps2tz_common_init(MachineState *machine)
+     qdev_prop_set_uint32(iotkitdev, "SRAM_ADDR_WIDTH", mmc->sram_addr_width);
+     qdev_connect_clock_in(iotkitdev, "MAINCLK", mms->sysclk);
+     qdev_connect_clock_in(iotkitdev, "S32KCLK", mms->s32kclk);
++    qdev_prop_set_bit(iotkitdev, "CPU0_FPU", true);
++    qdev_prop_set_bit(iotkitdev, "CPU0_DSP", true);
+     sysbus_realize(SYS_BUS_DEVICE(&mms->iotkit), &error_fatal);
+ 
+     /*
+@@ -944,6 +942,7 @@ static void mps2tz_common_init(MachineState *machine)
+                   { .i2c_internal = false /* shield 0 */ } },
+                 { "i2c3", make_i2c, &mms->i2c[3], 0x4020d000, 0x1000, {},
+                   { .i2c_internal = false /* shield 1 */ } },
++                { "rtc", make_rtc, &mms->rtc, 0x4020f000, 0x1000, {124} },
+             },
+         }, {
+             .name = "apb_ppcexp2",
+@@ -952,6 +951,9 @@ static void mps2tz_common_init(MachineState *machine)
+                 { "i2s-audio", make_unimp_dev, &mms->i2s_audio,
+                   0x40301000, 0x1000 },
+                 { "fpgaio", make_fpgaio, &mms->fpgaio, 0x40302000, 0x1000 },
++                //Add input(keyboard) device, base addr 0x40303000, Added Interrupt No. 126.
++                //Add input(mouse) device, base addr 0x40304000, Added Interrupt No. 127.
++                //Add clcd device, base addr 0x40305000, Added Interrupt No. 125.
+             },
+         }, {
+             .name = "ahb_ppcexp0",
+@@ -1192,6 +1194,15 @@ static void mps2tz_common_init(MachineState *machine)
+                                     mms->remap_irq);
+     }
+ 
++    if (mmc->fpga_type == FPGA_AN521 || mmc->fpga_type == FPGA_AN505) {
++        // add two PL050 ps2 interface
++        sysbus_create_simple("pl050_keyboard", 0x40303000, get_sse_irq_in(mms, 126));
++        sysbus_create_simple("pl050_mouse",    0x40304000, get_sse_irq_in(mms, 127));
++
++        // add PL111 Color LCD Controller
++        sysbus_create_simple("pl111", 0x40305000, get_sse_irq_in(mms, 125));
++    }
++
+     armv7m_load_kernel(ARM_CPU(first_cpu), machine->kernel_filename,
+                        boot_ram_size(mms));
+ }
+@@ -1297,7 +1308,7 @@ static void mps2tz_an505_class_init(ObjectClass *oc, void *data)
+     mmc->fpgaio_num_leds = 2;
+     mmc->fpgaio_has_switches = false;
+     mmc->fpgaio_has_dbgctrl = false;
+-    mmc->numirq = 92;
++    mmc->numirq = 96;
+     mmc->uart_overflow_irq = 47;
+     mmc->init_svtor = 0x10000000;
+     mmc->sram_addr_width = 15;
+@@ -1326,7 +1337,7 @@ static void mps2tz_an521_class_init(ObjectClass *oc, void *data)
+     mmc->fpgaio_num_leds = 2;
+     mmc->fpgaio_has_switches = false;
+     mmc->fpgaio_has_dbgctrl = false;
+-    mmc->numirq = 92;
++    mmc->numirq = 96;
+     mmc->uart_overflow_irq = 47;
+     mmc->init_svtor = 0x10000000;
+     mmc->sram_addr_width = 15;
+diff --git a/qemu/include/hw/clock.h b/qemu/include/hw/clock.h
+index 5c927ce..2c75514 100644
+--- a/qemu/include/hw/clock.h
++++ b/qemu/include/hw/clock.h
+@@ -173,7 +173,7 @@ void clock_set_source(Clock *clk, Clock *src);
+  */
+ static inline bool clock_has_source(const Clock *clk)
+ {
+-    return clk->source != NULL;
++    return ((clk->source != NULL) && (clk->period != 0));
+ }
+ 
+ /**

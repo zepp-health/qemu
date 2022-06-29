@@ -173,7 +173,7 @@ void clock_set_source(Clock *clk, Clock *src);
  */
 static inline bool clock_has_source(const Clock *clk)
 {
-    return clk->source != NULL;
+    return ((clk->source != NULL) && (clk->period != 0));
 }
 
 /**
