@@ -26,13 +26,12 @@ of other UNIX targets. The simple steps to build QEMU are:
 
     mkdir build
     cd build
-    ../configure
+    ../configure --target-list=arm-softmmu
     make
 
 Additional information can also be found online via the QEMU website:
 
-https://wiki.qemu.org/Hosts/Linux
-https://wiki.qemu.org/Hosts/Mac
-https://wiki.qemu.org/Hosts/W32
-
+	https://wiki.qemu.org/Hosts/Linux  
+	https://wiki.qemu.org/Hosts/Mac  
+	https://wiki.qemu.org/Hosts/W32  
 
