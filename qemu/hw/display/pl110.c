@@ -20,6 +20,7 @@
 #include "qom/object.h"
 
 #define PL110_CR_EN   0x001
+#define PL110_CR_DUAL 0x080
 #define PL110_CR_BGR  0x100
 #define PL110_CR_BEBO 0x200
 #define PL110_CR_BEPO 0x400
@@ -207,7 +208,16 @@ static int pl110_enabled(PL110State *s)
   return (s->cr & PL110_CR_EN) && (s->cr & PL110_CR_PWR);
 }
 
-static void pl110_update_display(void *opaque)
+/* 
+ * Only supports single framebuffer(fb), if set dual panel, The client driver
+ * needs to switch fb by itself.
+ * 
+ * When dual panels are enabled, There is a bug when switching fb: 
+ *     The asynchronous screen refresh is so fast that UI displays tearing or
+ *     dropping frames.
+ * So when fb switches, only update the screen synchronously once. 
+ */
+static void pl110_update_display_once(void *opaque)
 {
     PL110State *s = (PL110State *)opaque;
     SysBusDevice *sbd;
@@ -306,6 +316,16 @@ static void pl110_update_display(void *opaque)
         dpy_gfx_update(s->con, 0, first, s->cols, last - first + 1);
     }
     s->invalidate = 0;
+}
+
+static void pl110_update_display(void *opaque)
+{
+    PL110State *s = (PL110State *)opaque;
+
+    // Asynchronous update screen only when single pannel.
+    if (!(s->cr & PL110_CR_DUAL)) {
+        pl110_update_display_once(opaque);
+    }
 }
 
 static void pl110_invalidate_display(void * opaque)
@@ -456,7 +476,7 @@ static void pl110_write(void *opaque, hwaddr offset,
     switch (offset >> 2) {
     case 0: /* LCDTiming0 */
         s->timing[0] = val;
-        n = ((val & 0xfc) + 4) * 4;
+        n = (val & 0x3ff) + 1;
         pl110_resize(s, n, s->rows);
         break;
     case 1: /* LCDTiming1 */
@@ -472,6 +492,9 @@ static void pl110_write(void *opaque, hwaddr offset,
         break;
     case 4: /* LCDUPBASE */
         s->upbase = val;
+        if(s->cr & PL110_CR_DUAL) {
+            pl110_update_display_once(opaque);
+        }
         break;
     case 5: /* LCDLPBASE */
         s->lpbase = val;
