@@ -156,8 +156,11 @@ static void sdl_update_caption(struct sdl2_console *scon)
     }
 
     if (qemu_name) {
-        snprintf(win_title, sizeof(win_title), "QEMU (%s-%d)%s", qemu_name,
-                 scon->idx, status);
+        if(status[0] == '\0') {
+            snprintf(win_title, sizeof(win_title), "%s", qemu_name);
+        } else {
+            snprintf(win_title, sizeof(win_title), "%s%s", qemu_name, status);
+        }
         snprintf(icon_title, sizeof(icon_title), "QEMU (%s)", qemu_name);
     } else {
         snprintf(win_title, sizeof(win_title), "QEMU%s", status);

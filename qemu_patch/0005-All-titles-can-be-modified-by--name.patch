@@ -1,0 +1,95 @@
+From aad22c5468f9aed7f7ac5365b81fcf6247073939 Mon Sep 17 00:00:00 2001
+From: jiaolaibin <jiaolaibin@zepp.com>
+Date: Tue, 12 Jul 2022 10:58:58 +0800
+Subject: [PATCH] =?UTF-8?q?ref=20|=20CLOUD-9369=20>=20=E4=BF=AE=E6=94=B9-n?=
+ =?UTF-8?q?ame=E9=80=89=E9=A1=B9=E5=8F=AF=E8=AE=BE=E7=BD=AE=E5=85=A8?=
+ =?UTF-8?q?=E9=83=A8Title?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ qemu/ui/cocoa.m | 6 +++---
+ qemu/ui/gtk.c   | 2 +-
+ qemu/ui/sdl2.c  | 7 +++++--
+ qemu/ui/vnc.c   | 2 +-
+ 4 files changed, 10 insertions(+), 7 deletions(-)
+
+diff --git a/qemu/ui/cocoa.m b/qemu/ui/cocoa.m
+index 3116844a..c57f509f 100644
+--- a/qemu/ui/cocoa.m
++++ b/qemu/ui/cocoa.m
+@@ -598,7 +598,7 @@ QemuCocoaView *cocoaView;
+         [normalWindow setFrame:NSMakeRect([normalWindow frame].origin.x, [normalWindow frame].origin.y - h + oldh, w, h + [normalWindow frame].size.height - oldh) display:NO animate:NO];
+     } else {
+         if (qemu_name)
+-            [normalWindow setTitle:[NSString stringWithFormat:@"QEMU %s", qemu_name]];
++            [normalWindow setTitle:[NSString stringWithFormat:@"%s", qemu_name]];
+         [normalWindow setFrame:NSMakeRect([normalWindow frame].origin.x, [normalWindow frame].origin.y - h + oldh, w, h + [normalWindow frame].size.height - oldh) display:YES animate:NO];
+     }
+ 
+@@ -1051,7 +1051,7 @@ QemuCocoaView *cocoaView;
+ 
+     if (!isFullscreen) {
+         if (qemu_name)
+-            [normalWindow setTitle:[NSString stringWithFormat:@"QEMU %s - (Press ctrl + alt + g to release Mouse)", qemu_name]];
++            [normalWindow setTitle:[NSString stringWithFormat:@"%s - (Press ctrl + alt + g to release Mouse)", qemu_name]];
+         else
+             [normalWindow setTitle:@"QEMU - (Press ctrl + alt + g to release Mouse)"];
+     }
+@@ -1069,7 +1069,7 @@ QemuCocoaView *cocoaView;
+ 
+     if (!isFullscreen) {
+         if (qemu_name)
+-            [normalWindow setTitle:[NSString stringWithFormat:@"QEMU %s", qemu_name]];
++            [normalWindow setTitle:[NSString stringWithFormat:@"%s", qemu_name]];
+         else
+             [normalWindow setTitle:@"QEMU"];
+     }
+diff --git a/qemu/ui/gtk.c b/qemu/ui/gtk.c
+index 041b8cac..3f3d743b 100644
+--- a/qemu/ui/gtk.c
++++ b/qemu/ui/gtk.c
+@@ -223,7 +223,7 @@ static void gd_update_caption(GtkDisplayState *s)
+     int i;
+ 
+     if (qemu_name) {
+-        prefix = g_strdup_printf("QEMU (%s)", qemu_name);
++        prefix = g_strdup_printf("%s", qemu_name);
+     } else {
+         prefix = g_strdup_printf("QEMU");
+     }
+diff --git a/qemu/ui/sdl2.c b/qemu/ui/sdl2.c
+index f18022f6..4297c981 100644
+--- a/qemu/ui/sdl2.c
++++ b/qemu/ui/sdl2.c
+@@ -156,8 +156,11 @@ static void sdl_update_caption(struct sdl2_console *scon)
+     }
+ 
+     if (qemu_name) {
+-        snprintf(win_title, sizeof(win_title), "QEMU (%s-%d)%s", qemu_name,
+-                 scon->idx, status);
++        if(status[0] == '\0') {
++            snprintf(win_title, sizeof(win_title), "%s", qemu_name);
++        } else {
++            snprintf(win_title, sizeof(win_title), "%s%s", qemu_name, status);
++        }
+         snprintf(icon_title, sizeof(icon_title), "QEMU (%s)", qemu_name);
+     } else {
+         snprintf(win_title, sizeof(win_title), "QEMU%s", status);
+diff --git a/qemu/ui/vnc.c b/qemu/ui/vnc.c
+index 1ed1c7ef..f50fa93d 100644
+--- a/qemu/ui/vnc.c
++++ b/qemu/ui/vnc.c
+@@ -2696,7 +2696,7 @@ static int protocol_client_init(VncState *vs, uint8_t *data, size_t len)
+     pixel_format_message(vs);
+ 
+     if (qemu_name) {
+-        size = snprintf(buf, sizeof(buf), "QEMU (%s)", qemu_name);
++        size = snprintf(buf, sizeof(buf), "%s", qemu_name);
+         if (size > sizeof(buf)) {
+             size = sizeof(buf);
+         }
+-- 
+2.25.1
+

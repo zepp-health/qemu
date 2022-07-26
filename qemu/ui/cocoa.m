@@ -598,7 +598,7 @@ QemuCocoaView *cocoaView;
         [normalWindow setFrame:NSMakeRect([normalWindow frame].origin.x, [normalWindow frame].origin.y - h + oldh, w, h + [normalWindow frame].size.height - oldh) display:NO animate:NO];
     } else {
         if (qemu_name)
-            [normalWindow setTitle:[NSString stringWithFormat:@"QEMU %s", qemu_name]];
+            [normalWindow setTitle:[NSString stringWithFormat:@"%s", qemu_name]];
         [normalWindow setFrame:NSMakeRect([normalWindow frame].origin.x, [normalWindow frame].origin.y - h + oldh, w, h + [normalWindow frame].size.height - oldh) display:YES animate:NO];
     }
 
@@ -1051,7 +1051,7 @@ QemuCocoaView *cocoaView;
 
     if (!isFullscreen) {
         if (qemu_name)
-            [normalWindow setTitle:[NSString stringWithFormat:@"QEMU %s - (Press ctrl + alt + g to release Mouse)", qemu_name]];
+            [normalWindow setTitle:[NSString stringWithFormat:@"%s - (Press ctrl + alt + g to release Mouse)", qemu_name]];
         else
             [normalWindow setTitle:@"QEMU - (Press ctrl + alt + g to release Mouse)"];
     }
@@ -1069,7 +1069,7 @@ QemuCocoaView *cocoaView;
 
     if (!isFullscreen) {
         if (qemu_name)
-            [normalWindow setTitle:[NSString stringWithFormat:@"QEMU %s", qemu_name]];
+            [normalWindow setTitle:[NSString stringWithFormat:@"%s", qemu_name]];
         else
             [normalWindow setTitle:@"QEMU"];
     }
