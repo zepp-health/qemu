@@ -61,8 +61,8 @@
 #include "chardev/char.h"
 #include "qom/object.h"
 
-#define VC_WINDOW_X_MIN  320
-#define VC_WINDOW_Y_MIN  240
+#define VC_WINDOW_X_MIN  160
+#define VC_WINDOW_Y_MIN  120
 #define VC_TERM_X_MIN     80
 #define VC_TERM_Y_MIN     25
 #define VC_SCALE_MIN    0.25
@@ -889,16 +889,14 @@ static gboolean gd_motion_event(GtkWidget *widget, GdkEventMotion *motion,
         qemu_input_event_sync();
 #if __linux__
     } else if (s->ptr_owner == vc) {
-        int max_x = ww - 1;
-        int max_y = wh - 1;
         if (gui_grab && !s->full_screen
-            && (x <= 0 || y <= 0 || x >= max_x || y >= max_y)) {
+            && (x <= 0 || y <= 0 || x >= fbw || y >= fbh)) {
             gd_ungrab_keyboard(s);
             gd_ungrab_pointer(s);
             gd_update_cursor(vc);
         }
         if (!gui_grab && 
-            (x > 0 && x < max_x && y > 0 && y < max_y)) {
+            (x > 0 && x < fbw && y > 0 && y < fbh)) {
             gd_grab_keyboard(vc, "user-request-main-window");
             gd_grab_pointer(vc, "user-request-main-window");
             gd_update_cursor(vc);

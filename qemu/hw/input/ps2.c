@@ -741,7 +741,9 @@ static int ps2_mouse_send_packet(PS2MouseState *s)
     if((s->mouse_type == 0) && ((s->mouse_x & 0xFFFFE000) == 0x7FFF0000))
     {
         //high bit set to 1
-        b = 0x88 | ((dx1 < 0) << 4) | ((dy1 < 0) << 5) | (s->mouse_buttons & 0x07);
+        b = 0x80 | ((dx1 < 0) << 4) | ((dy1 < 0) << 5) | (s->mouse_buttons & 0x07);
+        //bit 3/6 - z's positive(0) or negative(1) / move(1) or not(0).
+        b |= ((dz1 != 0) << 6) | ((dz1 < 0) << 3);
 
         dx1  = (s->mouse_x >> 8) & 0x0F; // Get bit8:bit12 as bit0:bit3
         dx1 |= (s->mouse_y >> 4) & 0xF0; // Get bit8:bit12 as bit7:bit4

@@ -1,0 +1,49 @@
+diff --git a/qemu/hw/input/ps2.c b/qemu/hw/input/ps2.c
+index ce0ea74..7c9b1c4 100644
+--- a/qemu/hw/input/ps2.c
++++ b/qemu/hw/input/ps2.c
+@@ -741,7 +741,9 @@ static int ps2_mouse_send_packet(PS2MouseState *s)
+     if((s->mouse_type == 0) && ((s->mouse_x & 0xFFFFE000) == 0x7FFF0000))
+     {
+         //high bit set to 1
+-        b = 0x88 | ((dx1 < 0) << 4) | ((dy1 < 0) << 5) | (s->mouse_buttons & 0x07);
++        b = 0x80 | ((dx1 < 0) << 4) | ((dy1 < 0) << 5) | (s->mouse_buttons & 0x07);
++        //bit 3/6 - z's positive(0) or negative(1) / move(1) or not(0).
++        b |= ((dz1 != 0) << 6) | ((dz1 < 0) << 3);
+ 
+         dx1  = (s->mouse_x >> 8) & 0x0F; // Get bit8:bit12 as bit0:bit3
+         dx1 |= (s->mouse_y >> 4) & 0xF0; // Get bit8:bit12 as bit7:bit4
+diff --git a/qemu/ui/gtk.c b/qemu/ui/gtk.c
+index 3f3d743..f0ed60c 100644
+--- a/qemu/ui/gtk.c
++++ b/qemu/ui/gtk.c
+@@ -61,8 +61,8 @@
+ #include "chardev/char.h"
+ #include "qom/object.h"
+ 
+-#define VC_WINDOW_X_MIN  320
+-#define VC_WINDOW_Y_MIN  240
++#define VC_WINDOW_X_MIN  160
++#define VC_WINDOW_Y_MIN  120
+ #define VC_TERM_X_MIN     80
+ #define VC_TERM_Y_MIN     25
+ #define VC_SCALE_MIN    0.25
+@@ -889,16 +889,14 @@ static gboolean gd_motion_event(GtkWidget *widget, GdkEventMotion *motion,
+         qemu_input_event_sync();
+ #if __linux__
+     } else if (s->ptr_owner == vc) {
+-        int max_x = ww - 1;
+-        int max_y = wh - 1;
+         if (gui_grab && !s->full_screen
+-            && (x <= 0 || y <= 0 || x >= max_x || y >= max_y)) {
++            && (x <= 0 || y <= 0 || x >= fbw || y >= fbh)) {
+             gd_ungrab_keyboard(s);
+             gd_ungrab_pointer(s);
+             gd_update_cursor(vc);
+         }
+         if (!gui_grab && 
+-            (x > 0 && x < max_x && y > 0 && y < max_y)) {
++            (x > 0 && x < fbw && y > 0 && y < fbh)) {
+             gd_grab_keyboard(vc, "user-request-main-window");
+             gd_grab_pointer(vc, "user-request-main-window");
+             gd_update_cursor(vc);
